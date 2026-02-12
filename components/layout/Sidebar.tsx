@@ -1,7 +1,8 @@
 "use client";
 
 import React from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase/client";
 
 interface NavItem {
   label: string;
@@ -29,7 +30,7 @@ export default function Sidebar({
   return (
     <>
       {/* DESKTOP */}
-      <aside className="hidden md:fixed md:inset-y-0 md:left-0 md:z-40 md:flex md:w-65 md:flex-col bg-black/70 backdrop-blur-xl border-r border-white/10">
+      <aside className="hidden md:fixed md:inset-y-0 md:left-0 md:z-40 md:flex md:w-72 md:flex-col bg-black/70 backdrop-blur-xl border-r border-white/10">
         <SidebarContent />
       </aside>
 
@@ -57,6 +58,12 @@ export default function Sidebar({
 
 function SidebarContent({ onClose }: { onClose?: () => void }) {
   const pathname = usePathname();
+  const router = useRouter();
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.push("/login");
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -72,8 +79,7 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
             onClick={onClose}
             className="text-xs text-white/40 hover:text-white md:hidden"
           >
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="white" width={"24px"} height={"24px"} viewBox="0 0 640 640"><path d="M183.1 137.4C170.6 124.9 150.3 124.9 137.8 137.4C125.3 149.9 125.3 170.2 137.8 182.7L275.2 320L137.9 457.4C125.4 469.9 125.4 490.2 137.9 502.7C150.4 515.2 170.7 515.2 183.2 502.7L320.5 365.3L457.9 502.6C470.4 515.1 490.7 515.1 503.2 502.6C515.7 490.1 515.7 469.8 503.2 457.3L365.8 320L503.1 182.6C515.6 170.1 515.6 149.8 503.1 137.3C490.6 124.8 470.3 124.8 457.8 137.3L320.5 274.7L183.1 137.4z"/></svg>
-
+            ✕
           </button>
         )}
       </div>
@@ -116,7 +122,8 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
 
       {/* ACCOUNT CARD */}
       <div className="px-4 pb-4">
-        <div className="rounded-2xl bg-white/[0.04] border border-white/10 p-4">
+        <div className="rounded-2xl bg-white/[0.04] border border-white/10 p-4 space-y-4">
+
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-xs font-semibold">
               MR
@@ -129,6 +136,15 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
               Pro
             </span>
           </div>
+
+          {/* LOGOUT */}
+          <button
+            onClick={handleLogout}
+            className="w-full text-left text-xs text-white/40 hover:text-white transition"
+          >
+            Sign out
+          </button>
+
         </div>
       </div>
 
@@ -163,19 +179,15 @@ function SidebarItem({
             : "text-white/60 hover:text-white hover:bg-white/[0.06]"
         }`}
     >
-      {/* ICON */}
       <span
         className={`w-1.5 h-1.5 rounded-full transition ${
           active ? "bg-white" : "bg-white/30 group-hover:bg-white"
         }`}
       />
-
-      {/* LABEL */}
       <span className="font-light tracking-tight">
         {label}
       </span>
 
-      {/* ACTIVE GLOW */}
       {active && (
         <span className="absolute inset-0 rounded-xl ring-1 ring-white/10 pointer-events-none" />
       )}

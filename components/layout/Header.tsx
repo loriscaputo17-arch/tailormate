@@ -25,7 +25,7 @@ export default function Header() {
             </div>
 
             {/* DESKTOP NAV */}
-            <nav className="hidden md:flex items-center gap-8">
+            <nav className="hidden md:flex ml-auto mr-6 items-center gap-8">
               {navItems.map((item) => (
                 <a
                   key={item}
