@@ -12,10 +12,10 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", section: "primary" },
-  { label: "Clients", href: "/dashboard/clients", section: "primary" },
-  { label: "Measurements", href: "/dashboard/measurements", section: "primary" },
-  { label: "Orders", href: "/dashboard/orders", section: "primary" },
-  { label: "Archive", href: "/dashboard/archive", section: "secondary" },
+  { label: "Clients", href: "/dashboard/customers", section: "primary" },
+  { label: "Measurements", href: "/dashboard/notes", section: "primary" },
+  { label: "Calendar", href: "/dashboard/calendar", section: "primary" },
+  { label: "Settings", href: "/dashboard/settings", section: "secondary" },
 ];
 
 interface SidebarProps {
@@ -30,7 +30,7 @@ export default function Sidebar({
   return (
     <>
       {/* DESKTOP */}
-      <aside className="hidden md:fixed md:inset-y-0 md:left-0 md:z-40 md:flex md:w-72 md:flex-col bg-black/70 backdrop-blur-xl border-r border-white/10">
+      <aside className="hidden md:fixed md:inset-y-0 md:left-0 md:z-40 md:flex md:w-64 md:flex-col bg-black/70 backdrop-blur-xl border-r border-white/10">
         <SidebarContent />
       </aside>
 
@@ -70,7 +70,7 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
 
       {/* LOGO */}
       <div className="h-16 flex items-center justify-between px-6 border-b border-white/10">
-        <span className="text-sm font-semibold tracking-tight">
+        <span className="text-xl font-semibold tracking-tight">
           Tailor<span className="text-white/40 font-light">Mate</span>
         </span>
 
