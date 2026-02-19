@@ -37,9 +37,27 @@ export default function Header() {
               ))}
             </nav>
 
+             <div className="md:inline hidden mr-4">
+              <a
+                href="/login"
+                className="block w-full text-center py-2 px-4 rounded-full bg-white text-black text-xs font-bold"
+              >
+                Sign in
+              </a>
+            </div>
+
             {/* RIGHT ACTIONS */}
             <div className="flex items-center gap-2">
               {/* MOBILE MENU BUTTON */}
+              <div className="inline md:hidden">
+                <a
+                  href="/login"
+                  className="block w-full text-center py-2 px-4 rounded-full bg-white text-black text-xs font-bold"
+                >
+                  Sign in
+                </a>
+              </div>
+
               <button
                 onClick={() => setOpen(true)}
                 className="md:hidden px-4 py-2 rounded-full text-xs font-medium text-white/70 hover:text-white transition"

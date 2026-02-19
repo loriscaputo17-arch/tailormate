@@ -3,7 +3,8 @@
 import React from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
-
+import { useEffect, useState } from "react";
+import type { User } from "@supabase/supabase-js";
 interface NavItem {
   label: string;
   href: string;
@@ -16,6 +17,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Measurements", href: "/dashboard/notes", section: "primary" },
   { label: "Calendar", href: "/dashboard/calendar", section: "primary" },
   { label: "Settings", href: "/dashboard/settings", section: "secondary" },
+  { label: "Orders", href: "/dashboard/orders", section: "primary" },
 ];
 
 interface SidebarProps {
@@ -27,6 +29,7 @@ export default function Sidebar({
   mobileOpen = false,
   onClose,
 }: SidebarProps) {
+
   return (
     <>
       {/* DESKTOP */}
@@ -65,6 +68,26 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
     router.push("/login");
   }
 
+  const [user, setUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    async function loadUser() {
+      const { data } = await supabase.auth.getUser();
+      setUser(data.user);
+      console.log(data)
+    }
+
+    loadUser();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
   return (
     <div className="flex h-full flex-col">
 
@@ -77,7 +100,7 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
         {onClose && (
           <button
             onClick={onClose}
-            className="text-xs text-white/40 hover:text-white md:hidden"
+            className="text-lg text-white/40 hover:text-white md:hidden"
           >
             ✕
           </button>
@@ -125,16 +148,12 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
         <div className="rounded-2xl bg-white/[0.04] border border-white/10 p-4 space-y-4">
 
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-xs font-semibold">
-              MR
+            <div className="w-9 h-9 p-4 rounded-full bg-white/10 flex items-center justify-center text-xs font-semibold">
+                {user?.email?.slice(0, 1).toUpperCase()}
             </div>
             <div className="flex-1">
-              <div className="text-sm font-light">Mario Rossi</div>
-              <div className="text-xs text-white/40">Milano Atelier</div>
+              <div className="text-sm font-light">{user?.email}</div>
             </div>
-            <span className="text-[10px] px-2 py-1 rounded-full bg-white/10 text-white/60">
-              Pro
-            </span>
           </div>
 
           {/* LOGOUT */}

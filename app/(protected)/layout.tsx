@@ -24,7 +24,7 @@ export default function DashboardLayout({
 
         {/* TOP BAR (mobile) */}
         <header className="h-16 flex items-center justify-between px-6 border-b border-white/10 md:hidden">
-          <span className="text-sm font-semibold">
+          <span className="text-lg font-semibold">
             Tailor<span className="text-white/50 font-light">Mate</span>
           </span>
 
