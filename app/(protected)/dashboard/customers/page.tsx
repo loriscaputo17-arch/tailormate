@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { supabase } from "@/lib/supabase/client";
 
 /* =====================================================
@@ -12,7 +12,9 @@ interface Client {
   full_name: string;
   email: string | null;
   phone: string | null;
+  address: string | null;
   created_at: string;
+  updated_at?: string | null;
 }
 
 interface MeasurementSession {
@@ -38,9 +40,108 @@ interface ClientNote {
   created_at: string;
 }
 
-/* =====================================================
-   PAGE
-===================================================== */
+interface ClientsTableProps {
+  clients: Client[];
+  loading: boolean;
+  onOpen: (client: Client) => void;
+
+  search: string;
+  onSearchChange: (v: string) => void;
+
+  addressFilter: string;
+  onAddressFilterChange: (v: string) => void;
+}
+
+interface ClientSidebarProps {
+  client: Client | null;
+  measurements: MeasurementSession[];
+  notes: ClientNote[];
+  loading: boolean;
+  onClose: () => void;
+}
+
+function normalizeName(name: string) {
+  return name
+    .toLowerCase()
+    .replace(/\./g, "")           
+    .replace(/\b[a-z]\b/g, "")    
+    .replace(/\s+/g, " ")         
+    .trim();
+}
+
+function formatDateTimeWithOrdinal(dateString: string) {
+  const date = new Date(dateString);
+
+  const day = date.getDate();
+
+  const suffix =
+    day % 10 === 1 && day !== 11
+      ? "st"
+      : day % 10 === 2 && day !== 12
+      ? "nd"
+      : day % 10 === 3 && day !== 13
+      ? "rd"
+      : "th";
+
+  const month = date.toLocaleDateString("en-GB", { month: "short" });
+  const year = date.getFullYear();
+
+  const time = date.toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  return `${day}${suffix} ${month} ${year} · ${time}`;
+}
+
+function extractAddress(text?: string | null): string | null {
+  if (!text) return null;
+
+  const lines = text.split(/\r?\n/);
+  const collected: string[] = [];
+
+  let capturing = false;
+
+  const looksLikeNewField = (line: string) =>
+    /^[a-z][a-z\s]+[:\-]/i.test(line);
+
+  const looksLikeAddressLine = (line: string) => {
+    return (
+      /\d/.test(line) ||
+      /\b(st|street|ave|avenue|road|rd|lane|ln|blvd|drive|dr|way|ct|court|zip|ny|ca|tx|uk|usa)\b/i.test(
+        line
+      )
+    );
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const line = raw.trim();
+
+    if (!capturing && /address\s*[:\-]/i.test(line)) {
+      capturing = true;
+
+      const first = line.replace(/.*address\s*[:\-]\s*/i, "").trim();
+      if (first) collected.push(first);
+      continue;
+    }
+
+    if (!capturing) continue;
+
+    if (looksLikeNewField(line)) break;
+
+    if (!line) break;
+
+    if (!looksLikeAddressLine(line)) break;
+
+    collected.push(line);
+  }
+
+  if (!collected.length) return null;
+
+  return collected.join(", ");
+}
 
 export default function CustomersPage() {
   const [clients, setClients] = useState<Client[]>([]);
@@ -51,9 +152,8 @@ export default function CustomersPage() {
   const [notes, setNotes] = useState<ClientNote[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
 
-  /* =====================================================
-     LOAD CLIENTS
-  ===================================================== */
+  const [search, setSearch] = useState("");
+  const [addressFilter, setAddressFilter] = useState<string>("all");
 
   useEffect(() => {
     loadClients();
@@ -72,28 +172,31 @@ export default function CustomersPage() {
     setLoading(false);
   }
 
-  /* =====================================================
-     LOAD CLIENT DETAILS
-  ===================================================== */
-
   async function openClient(client: Client) {
     setSelected(client);
     setDetailLoading(true);
 
-    // measurements + values
+    const normalizedTarget = normalizeName(client.full_name);
+
+    const { data: allClients } = await supabase
+      .from("clients")
+      .select("id, full_name");
+
+    const clientIds =
+      allClients
+        ?.filter(c => normalizeName(c.full_name) === normalizedTarget)
+        .map(c => c.id) || [];
+
     const { data: mData } = await supabase
       .from("client_measurements")
-      .select(
-        `*, client_measurement_values (*)`
-      )
-      .eq("client_id", client.id)
+      .select(`*, client_measurement_values (*)`)
+      .in("client_id", clientIds)
       .order("created_at", { ascending: false });
 
-    // notes
     const { data: nData } = await supabase
       .from("client_notes")
       .select("*")
-      .eq("client_id", client.id)
+      .in("client_id", clientIds)
       .order("created_at", { ascending: false });
 
     setMeasurements(mData || []);
@@ -119,6 +222,10 @@ export default function CustomersPage() {
         clients={clients}
         loading={loading}
         onOpen={openClient}
+        search={search}
+        onSearchChange={setSearch}
+        addressFilter={addressFilter}
+        onAddressFilterChange={setAddressFilter}
       />
 
       <ClientSidebar
@@ -160,63 +267,148 @@ function Header() {
    TABLE
 ===================================================== */
 
-function ClientsTable({ clients, loading, onOpen }: any) {
+function ClientsTable({
+  clients,
+  loading,
+  onOpen,
+  search,
+  onSearchChange,
+  addressFilter,
+  onAddressFilterChange,
+}: ClientsTableProps) {
+  const grouped = new Map<string, Client[]>();
+
+  for (const client of clients) {
+    const key = normalizeName(client.full_name);
+
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
+    }
+
+    grouped.get(key)!.push(client);
+  }
+
+  const uniqueClients: Client[] = Array.from(grouped.values()).map(group =>
+    group.sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() -
+        new Date(a.created_at).getTime()
+    )[0]
+  );
+
+  const filteredClients = useMemo(() => {
+    const q = search.trim().toLowerCase();
+
+    return uniqueClients.filter((c) => {
+      const matchesSearch =
+        !q ||
+        c.full_name.toLowerCase().includes(q) ||
+        (c.email ?? "").toLowerCase().includes(q) ||
+        (c.phone ?? "").toLowerCase().includes(q);
+
+      if (!matchesSearch) return false;
+
+      if (addressFilter !== "all") {
+        return (c.address ?? "") === addressFilter;
+      }
+
+      return true;
+    });
+  }, [uniqueClients, search, addressFilter]);
+
+  const availableAddresses = useMemo(() => {
+    const set = new Set<string>();
+
+    uniqueClients.forEach((c) => {
+      if (c.address?.trim()) {
+        set.add(c.address.trim());
+      }
+    });
+
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [uniqueClients]);
+
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.02] overflow-hidden">
-      <table className="w-full text-sm">
-        <thead className="text-white/40 text-xs uppercase">
-          <tr className="border-b border-white/10">
-            <th className="text-left px-6 py-4">Name</th>
-            <th className="text-left px-6 py-4">Email</th>
-            <th className="text-left px-6 py-4">Phone</th>
-            <th className="text-left px-6 py-4">Created</th>
-          </tr>
-        </thead>
+    <div>
+      <div className="flex flex-col md:flex-row gap-3 mb-4">
+        {/* SEARCH */}
+        <input
+          value={search}
+          onChange={(e) => onSearchChange(e.target.value)}
+          placeholder="Search name, email or phone…"
+          className="flex-1 rounded-lg bg-white/5 border border-white/10 px-4 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30"
+        />
 
-        <tbody>
-          {loading && (
-            <tr>
-              <td className="px-6 py-10 text-white/40" colSpan={4}>
-                Loading clients…
-              </td>
-            </tr>
-          )}
+        {/* FILTER */}
+        <select
+          value={addressFilter}
+          onChange={(e) => onAddressFilterChange(e.target.value)}
+          className="rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-white focus:outline-none focus:border-white/30"
+        >
+          <option value="all">All addresses</option>
 
-          {!loading && clients.length === 0 && (
-            <tr>
-              <td className="px-6 py-10 text-white/40" colSpan={4}>
-                No clients yet
-              </td>
-            </tr>
-          )}
-
-          {clients.map((c: Client) => (
-            <tr
-              key={c.id}
-              onClick={() => onOpen(c)}
-              className="border-b border-white/5 hover:bg-white/[0.04] cursor-pointer transition"
-            >
-              <td className="px-6 py-4 font-light">{c.full_name}</td>
-              <td className="px-6 py-4 text-white/60">
-                {c.email || "—"}
-              </td>
-              <td className="px-6 py-4 text-white/60">
-                {c.phone || "—"}
-              </td>
-              <td className="px-6 py-4 text-white/40">
-                {new Date(c.created_at).toLocaleDateString()}
-              </td>
-            </tr>
+          {availableAddresses.map((addr) => (
+            <option key={addr} value={addr}>
+              {addr}
+            </option>
           ))}
-        </tbody>
-      </table>
+        </select>
+      </div>
+      
+      <div className="rounded-2xl border border-white/10 bg-white/[0.02] overflow-hidden">
+        
+
+        <table className="w-full text-sm">
+          <thead className="text-white/40 text-xs uppercase">
+            <tr className="border-b border-white/10">
+              <th className="text-left px-6 py-4">Name</th>
+              <th className="text-left px-6 py-4">Email</th>
+              <th className="text-left px-6 py-4">Phone</th>
+              <th className="text-left px-6 py-4">Created</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {loading && (
+              <tr>
+                <td className="px-6 py-10 text-white/40" colSpan={4}>
+                  Loading clients…
+                </td>
+              </tr>
+            )}
+
+            {!loading && uniqueClients.length === 0 && (
+              <tr>
+                <td className="px-6 py-10 text-white/40" colSpan={4}>
+                  No clients yet
+                </td>
+              </tr>
+            )}
+
+            {filteredClients.map((c) => (
+              <tr
+                key={c.id}
+                onClick={() => onOpen(c)}
+                className="border-b border-white/5 hover:bg-white/[0.04] cursor-pointer transition"
+              >
+                <td className="px-6 py-4 font-light">{c.full_name}</td>
+                <td className="px-6 py-4 text-white/60">
+                  {c.email || "—"}
+                </td>
+                <td className="px-6 py-4 text-white/60">
+                  {c.phone || "—"}
+                </td>
+                <td className="px-6 py-4 text-white/40">
+                  {new Date(c.created_at).toLocaleDateString()}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
-
-/* =====================================================
-   SIDEBAR
-===================================================== */
 
 function ClientSidebar({
   client,
@@ -224,16 +416,64 @@ function ClientSidebar({
   notes,
   loading,
   onClose,
-}: any) {
+}: ClientSidebarProps) {
+  const extractedAddress = useMemo(() => {
+  return (
+    measurements
+      ?.map((m: MeasurementSession) => extractAddress(m.raw_text))
+      .find(Boolean) || null
+  );
+}, [measurements]);
+
+  const [addressValue, setAddressValue] = useState("");
+  const [savingAddress, setSavingAddress] = useState(false);
+  const [showSavedToast, setShowSavedToast] = useState(false);
+  
+useEffect(() => {
+  if (!client) return;
+
+  console.log(client)
+
+  if (client.address) {
+    setAddressValue(client.address);
+  } else if (extractedAddress) {
+    setAddressValue(extractedAddress);
+  } else {
+    setAddressValue("");
+  }
+}, [client?.id, client?.address, extractedAddress]);
+
+  async function saveAddress() {
+    if (!client) return;
+
+    setSavingAddress(true);
+
+    const { error } = await supabase
+      .from("clients")
+      .update({ address: addressValue })
+      .eq("id", client.id);
+
+    setSavingAddress(false);
+
+    if (!error) {
+      setShowSavedToast(true);
+
+      // auto hide
+      setTimeout(() => {
+        setShowSavedToast(false);
+      }, 2200);
+    }
+  }
+
   if (!client) return null;
 
   return (
-    <div className="fixed inset-y-0 right-0 w-[420px] bg-black border-l border-white/10 z-50 overflow-y-auto">
+    <div className="fixed inset-y-0 right-0 w-[640px] max-w-[95vw] bg-black border-l border-white/10 z-50 overflow-y-auto">
       <div className="p-6 space-y-8">
         {/* header */}
         <div className="flex items-start justify-between">
           <div>
-            <div className="text-xl font-light">{client.full_name}</div>
+            <div className="text-xl font-semibold">{client.full_name}</div>
             <div className="text-xs text-white/40 mt-1">
               {client.email || "No email"}
             </div>
@@ -247,6 +487,27 @@ function ClientSidebar({
           </button>
         </div>
 
+        <div className="mt-3 space-y-2">
+              <div className="text-[11px] uppercase tracking-widest text-white/40">
+                Address
+              </div>
+
+              <input
+                value={addressValue}
+                onChange={(e) => setAddressValue(e.target.value)}
+                placeholder="No address"
+                className="w-full rounded-lg mb-4 bg-white/5 border border-white/10 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/30"
+              />
+
+              <button
+                onClick={saveAddress}
+                disabled={savingAddress}
+                className="text-xs px-3 py-1.5 rounded-full bg-white text-black hover:opacity-90 disabled:opacity-50 transition"
+              >
+                {savingAddress ? "Saving…" : "Save address"}
+              </button>
+            </div>
+
         {loading && (
           <div className="text-white/40 text-sm">Loading…</div>
         )}
@@ -257,7 +518,48 @@ function ClientSidebar({
             <NotesBlock notes={notes} />
           </>
         )}
+
+        <SaveToast visible={showSavedToast} />
       </div>
+    </div>
+  );
+}
+
+function SaveToast({ visible }: { visible: boolean }) {
+  return (
+    <div
+      className={`
+        fixed bottom-6 right-6 z-[999]
+        transition-all duration-300
+        ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"}
+      `}
+    >
+      <div className="rounded-xl bg-white text-black px-4 py-2 shadow-lg text-sm font-medium">
+        Address saved ✓
+      </div>
+    </div>
+  );
+}
+
+function RawTextToggle({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="space-y-2">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="text-[14px] cursor-pointer px-3 py-1.5 px-6 w-full bg-white rounded-full border border-white/15 text-black hover:text-black hover:border-white/30 transition"
+      >
+        {open ? "Close" : "Expand"}
+      </button>
+
+      {open && (
+        <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+          <pre className="whitespace-pre-wrap text-white/60 text-xs">
+            {text}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
@@ -269,7 +571,7 @@ function ClientSidebar({
 function MeasurementsBlock({ sessions }: any) {
   return (
     <div className="space-y-4">
-      <div className="text-xs uppercase tracking-widest text-white/40">
+      <div className="text-xs uppercase tracking-widest text-white">
         Measurements
       </div>
 
@@ -282,8 +584,8 @@ function MeasurementsBlock({ sessions }: any) {
           key={s.id}
           className="rounded-xl border border-white/10 p-4 space-y-3"
         >
-          <div className="text-[11px] text-white/40">
-            {new Date(s.created_at).toLocaleString()}
+          <div className="text-[14px] text-white font-bold">
+            {formatDateTimeWithOrdinal(s.created_at)}
           </div>
 
           {/* values */}
@@ -303,16 +605,7 @@ function MeasurementsBlock({ sessions }: any) {
             ))}
           </div>
 
-          {s.raw_text && (
-            <details className="text-xs text-white/50">
-              <summary className="cursor-pointer hover:text-white">
-                View raw text
-              </summary>
-              <pre className="mt-2 whitespace-pre-wrap text-white/60">
-                {s.raw_text}
-              </pre>
-            </details>
-          )}
+          {s.raw_text && <RawTextToggle text={s.raw_text} />}
         </div>
       ))}
     </div>
@@ -326,7 +619,7 @@ function MeasurementsBlock({ sessions }: any) {
 function NotesBlock({ notes }: any) {
   return (
     <div className="space-y-4">
-      <div className="text-xs uppercase tracking-widest text-white/40">
+      <div className="text-xs uppercase tracking-widest text-white">
         Notes
       </div>
 
@@ -339,8 +632,8 @@ function NotesBlock({ notes }: any) {
           key={n.id}
           className="rounded-xl border border-white/10 p-4 space-y-3"
         >
-          <div className="text-[11px] text-white/40">
-            {new Date(n.created_at).toLocaleString()}
+          <div className="text-[14px] text-white font-bold">
+            {formatDateTimeWithOrdinal(n.created_at)}
           </div>
 
           <ul className="space-y-1">
@@ -351,16 +644,8 @@ function NotesBlock({ notes }: any) {
             ))}
           </ul>
 
-          {n.raw_text && (
-            <details className="text-xs text-white/50">
-              <summary className="cursor-pointer hover:text-white">
-                View raw text
-              </summary>
-              <pre className="mt-2 whitespace-pre-wrap text-white/60">
-                {n.raw_text}
-              </pre>
-            </details>
-          )}
+          {/*{n.raw_text && <RawTextToggle text={n.raw_text} />}*/}
+
         </div>
       ))}
     </div>
