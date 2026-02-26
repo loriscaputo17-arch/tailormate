@@ -99,7 +99,7 @@ export default function NewNotePage() {
                 onChange={(e) => handleFiles(e.target.files)}
               />
               <div className="text-sm text-white/60">
-                Click to upload images or PDFs
+                Click to upload images
               </div>
               <div className="text-xs text-white/30 mt-1">
                 Multiple files supported

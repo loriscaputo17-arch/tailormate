@@ -40,22 +40,14 @@ export default function NewClientImportPage() {
   const [results, setResults] = useState<ClientAiResult[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  /* =====================================================
-     FILE HANDLING
-  ===================================================== */
-
   function handleFiles(input: FileList | null) {
     if (!input) return;
-
     const next: UploadedFile[] = Array.from(input).map((file) => ({
       id: crypto.randomUUID(),
       file,
       name: file.name,
-      preview: file.type.startsWith("image/")
-        ? URL.createObjectURL(file)
-        : undefined,
+      preview: file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined,
     }));
-
     setFiles((prev) => [...prev, ...next]);
   }
 
@@ -63,62 +55,39 @@ export default function NewClientImportPage() {
     setFiles((prev) => prev.filter((f) => f.id !== id));
   }
 
-  /* =====================================================
-     UPLOAD + AI
-  ===================================================== */
-
   async function runAi() {
     try {
       setError(null);
       setStep("processing");
 
-      // 🔐 session
       const { data } = await supabase.auth.getSession();
       const session = data.session;
+      if (!session?.access_token) throw new Error("No active session");
 
-      if (!session?.access_token) {
-        throw new Error("No active session");
-      }
-
-      // 📤 upload in parallelo (molto più veloce)
       const uploaded: UploadedFile[] = await Promise.all(
         files.map(async (f) => {
           const path = `client-intake/${crypto.randomUUID()}-${f.name}`;
-
-          const { error } = await supabase.storage
-            .from("customers")
-            .upload(path, f.file, { upsert: false });
-
+          const { error } = await supabase.storage.from("customers").upload(path, f.file, { upsert: false });
           if (error) throw error;
-
           return { ...f, path };
         })
       );
 
       setFiles(uploaded);
 
-      const res = await fetch(
-        "https://miitmryvmrbdhqvftlio.supabase.co/functions/v1/customers-parse",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${session.access_token}`,
-            apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-          },
-          body: JSON.stringify({
-            files: uploaded.map((f) => f.path),
-          }),
-        }
-      );
+      const res = await fetch("https://miitmryvmrbdhqvftlio.supabase.co/functions/v1/customers-parse", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+          apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        },
+        body: JSON.stringify({ files: uploaded.map((f) => f.path) }),
+      });
 
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || "Edge function failed");
-      }
+      if (!res.ok) { const txt = await res.text(); throw new Error(txt || "Edge function failed"); }
 
       const json = await res.json();
-
       setResults(json.results ?? []);
       setStep("review");
     } catch (err: any) {
@@ -128,110 +97,52 @@ export default function NewClientImportPage() {
     }
   }
 
-  /* =====================================================
-     SAVE TO DATABASE
-  ===================================================== */
-
   async function saveAll() {
     try {
       setStep("saving");
       setError(null);
 
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
+      const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Not authenticated");
-
-      console.log(user.id)
 
       for (const r of results) {
         const s = r.structured;
-
         if (!s.full_name) continue;
 
-        // 1️⃣ find existing client
         let clientId: string | null = null;
-
-        const { data: existing } = await supabase
-          .from("clients")
-          .select("id")
-          .eq("tailor_id", user.id)
-          .ilike("full_name", s.full_name)
-          .maybeSingle();
+        const { data: existing } = await supabase.from("clients").select("id").eq("tailor_id", user.id).ilike("full_name", s.full_name).maybeSingle();
 
         if (existing?.id) {
           clientId = existing.id;
+          const clientFiles = files.filter(f => f.path).map(f => ({ client_id: clientId, storage_path: f.path, original_name: f.name }));
+          if (clientFiles.length) await supabase.from("client_files").insert(clientFiles);
         } else {
-          // 2️⃣ create client
-          const { data: created, error: createErr } = await supabase
-            .from("clients")
-            .insert({
-              tailor_id: user.id,
-              full_name: s.full_name,
-              email: s.email,
-              phone: s.phone,
-            })
-            .select("id")
-            .single();
-
+          const { data: created, error: createErr } = await supabase.from("clients").insert({ tailor_id: user.id, full_name: s.full_name, email: s.email, phone: s.phone }).select("id").single();
           if (createErr) throw createErr;
           clientId = created.id;
         }
 
-        // 3️⃣ save measurement session
         if (clientId) {
-          const { data: m, error: mErr } = await supabase
-            .from("client_measurements")
-            .insert({
-              tailor_id: user.id,
-              client_id: clientId,
-              raw_text: r.rawText,
-              structured_data: s.measurements,
-            })
-            .select("id")
-            .single();
-
+          const { data: m, error: mErr } = await supabase.from("client_measurements").insert({ tailor_id: user.id, client_id: clientId, raw_text: r.rawText, structured_data: s.measurements }).select("id").single();
           if (mErr) throw mErr;
 
           if (s.notes?.length && clientId) {
-            const { error: notesErr } = await supabase
-              .from("client_notes")
-              .insert({
-                tailor_id: user.id,
-                client_id: clientId,
-                raw_text: r.rawText || "",
-                notes: s.notes,
-                source: "ai",
-              });
-
+            const { error: notesErr } = await supabase.from("client_notes").insert({ tailor_id: user.id, client_id: clientId, raw_text: r.rawText || "", notes: s.notes, source: "ai" });
             if (notesErr) throw notesErr;
           }
-          
+
           const flatMeasurements: any[] = [];
-
-         if (s.measurements) {
-          for (const [garment, values] of Object.entries(s.measurements)) {
-            if (!values || typeof values !== "object") continue;
-
-            for (const [key, value] of Object.entries(values)) {
-              flatMeasurements.push({
-                measurement_id: m.id,
-                garment,
-                key,
-                value:
-                  parseFloat(String(value).replace(/[^0-9.]/g, "")) || null,
-                unit: "cm",
-              });
+          if (s.measurements) {
+            for (const [garment, values] of Object.entries(s.measurements)) {
+              if (!values || typeof values !== "object") continue;
+              for (const [key, value] of Object.entries(values)) {
+                flatMeasurements.push({ measurement_id: m.id, garment, key, value: parseFloat(String(value).replace(/[^0-9.]/g, "")) || null, unit: "cm" });
+              }
             }
           }
-        }
-
-        if (flatMeasurements.length > 0) {
-          await supabase.from("client_measurement_values").insert(flatMeasurements);
+          if (flatMeasurements.length > 0) await supabase.from("client_measurement_values").insert(flatMeasurements);
         }
       }
-    }
 
       setStep("done");
     } catch (err: any) {
@@ -241,169 +152,178 @@ export default function NewClientImportPage() {
     }
   }
 
-  /* =====================================================
-     RENDER
-  ===================================================== */
-
-  return (
-    <div className="space-y-6 max-w-6xl">
-      <Header />
-
-      {error && (
-        <div className="text-red-400 text-sm">{error}</div>
-      )}
-
-      {step === "upload" && (
-        <UploadStep
-          files={files}
-          onFiles={handleFiles}
-          onRemove={removeFile}
-          onNext={runAi}
-        />
-      )}
-
-      {step === "processing" && <ProcessingStep />}
-
-      {step === "review" && (
-        <ReviewStep results={results} setResults={setResults} onSave={saveAll} />
-      )}
-
-      {step === "saving" && <ProcessingStep label="Saving clients…" />}
-
-      {step === "done" && (
-        <div className="space-y-4">
-          <div className="text-green-400">Import completed.</div>
-
-          <button
-            onClick={() => {
-              setStep("upload");
-              setFiles([]);
-              setResults([]);
-              setError(null);
-            }}
-            className="cursor-pointer px-6 py-2 rounded-full bg-white text-black text-sm font-medium hover:opacity-90"
-          >
-            Import another client
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* =====================================================
-   SUB COMPONENTS
-===================================================== */
-
-function Header() {
-    const router = useRouter();
-  
-  return (
-    <div>
-      <button
-        onClick={() => router.push("/dashboard/customers")}
-        className="text-sm text-black bg-white rounded-full py-3 px-6  transition"
-      >
-        Back to customers
-      </button>
-      <h1 className="text-3xl mt-4 font-light tracking-tight">
-        Import client documents
-      </h1>
-      <p className="text-white/50 mt-1">
-        Upload PDFs or images and extract client data automatically.
-      </p>
-    </div>
-  );
-}
-
-function UploadStep({ files, onFiles, onRemove, onNext }: any) {
   return (
     <>
-     <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6">
-        {/* 📷 CAMERA */}
-        <label className="mb-8 block cursor-pointer text-center py-4 border border-dashed border-white/20 rounded-xl hover:bg-white/[0.04] transition">
-          <input
-            type="file"
-            accept="image/*"
-            capture="environment"
-            className="hidden"
-            onChange={(e) => {
-              onFiles(e.target.files);
-              e.currentTarget.value = ""; // 🔥 permette scatti multipli
-            }}
-          />
-          <div className="text-sm text-white/60">
-            Take photo with camera
+      <style>{`
+        @keyframes fadeUp {
+          from { opacity: 0; transform: translateY(14px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes spin-slow { to { transform: rotate(360deg); } }
+        .fade-up { animation: fadeUp 0.5s ease forwards; opacity: 0; }
+        .d1 { animation-delay: 0.04s; } .d2 { animation-delay: 0.10s; } .d3 { animation-delay: 0.16s; }
+        .gold { color: #c9a96e; }
+        .gold-border { border-color: rgba(201,169,110,0.35); }
+        .gold-bg { background: rgba(201,169,110,0.08); }
+        .gold-line { background: linear-gradient(90deg, #c9a96e, transparent); }
+        .btn-gold { border: 1px solid rgba(201,169,110,0.4); color: #c9a96e; }
+        .btn-gold:hover { background: rgba(201,169,110,0.1); }
+        .upload-zone:hover { background: rgba(255,255,255,0.025); border-color: rgba(201,169,110,0.3); }
+        .spin-slow { animation: spin-slow 2s linear infinite; }
+      `}</style>
+
+      <div className="max-w-5xl space-y-10 pb-20">
+
+        {/* ── HEADER ── */}
+        <div className="fade-up d1 flex items-end justify-between border-b border-white/8 pb-8">
+          <div>
+            <PageBackButton />
+            <p className="text-[10px] tracking-[0.25em] text-white/30 uppercase mb-3 mt-6">New Client</p>
+            <h1 className="text-4xl font-light tracking-tight text-white leading-none">
+              Import Documents
+            </h1>
+            <p className="text-sm text-white/35 mt-3">Upload client documents and extract data automatically.</p>
           </div>
-        </label>
 
-        {/* 📁 UPLOAD NORMALE */}
-        <label className="block cursor-pointer text-center py-10 border border-dashed border-white/20 rounded-xl hover:bg-white/[0.04] transition">
-          <input
-            type="file"
-            multiple
-            accept="image/*,.pdf"
-            className="hidden"
-            onChange={(e) => onFiles(e.target.files)}
-          />
-          <div className="text-sm text-white/60">
-            Click to upload images or PDFs
-          </div>
-        </label>
-      </div>
-
-
-      {files.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {files.map((file: UploadedFile) => (
-            <div
-              key={file.id}
-              className="relative rounded-xl bg-black/40 border border-white/10 p-3 text-xs"
-            >
-              {file.preview ? (
-                <img src={file.preview} className="rounded-md mb-2" />
-              ) : (
-                <div className="h-24 flex items-center justify-center text-white/30">
-                  PDF
+          {/* Step indicator */}
+          <div className="flex items-center gap-2 pb-1">
+            {(["upload", "review", "done"] as const).map((s, i) => (
+              <div key={s} className="flex items-center gap-2">
+                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] tracking-wider transition-all duration-300 ${
+                  step === s || (step === "processing" && s === "upload") || (step === "saving" && s === "review")
+                    ? "bg-[#c9a96e] text-black font-medium"
+                    : step === "done" || (i === 0 && ["review", "saving", "done"].includes(step)) || (i === 1 && ["done"].includes(step))
+                    ? "bg-white/15 text-white/60"
+                    : "bg-white/6 text-white/25"
+                }`}>
+                  {i + 1}
                 </div>
-              )}
-
-              <div className="truncate text-white/70">{file.name}</div>
-
-              <button
-                onClick={() => onRemove(file.id)}
-                className="absolute top-2 right-2 text-white/40 hover:text-white"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
+                {i < 2 && <div className="w-8 h-px bg-white/10" />}
+              </div>
+            ))}
+          </div>
         </div>
-      )}
 
-      <div className="flex justify-end">
-        <button
-          disabled={files.length === 0}
-          onClick={onNext}
-          className="px-6 py-3 rounded-full bg-white text-black text-sm font-medium disabled:opacity-40"
-        >
-          Analyze documents
-        </button>
+        {/* ── ERROR ── */}
+        {error && (
+          <div className="fade-up rounded-xl border border-red-500/30 bg-red-500/8 px-5 py-4 text-sm text-red-400">
+            ⚠ {error}
+          </div>
+        )}
+
+        {/* ── STEPS ── */}
+        {step === "upload" && (
+          <UploadStep files={files} onFiles={handleFiles} onRemove={removeFile} onNext={runAi} />
+        )}
+        {step === "processing" && <ProcessingStep />}
+        {step === "review" && (
+          <ReviewStep results={results} setResults={setResults} onSave={saveAll} />
+        )}
+        {step === "saving" && <ProcessingStep label="Saving clients to archive…" />}
+        {step === "done" && <DoneStep onReset={() => { setStep("upload"); setFiles([]); setResults([]); setError(null); }} />}
       </div>
     </>
   );
 }
 
-function ProcessingStep({ label }: { label?: string }) {
+/* =====================================================
+   BACK BUTTON
+===================================================== */
+
+function PageBackButton() {
+  const router = useRouter();
   return (
-    <div className="flex flex-col items-center justify-center py-20 text-center">
-      <div className="animate-pulse text-white/60 mb-4">
-        {label || "Reading documents…"}
+    <button onClick={() => router.push("/dashboard/customers")}
+      className="inline-flex items-center gap-2 text-xs tracking-widest uppercase text-white/35 hover:text-white/70 transition-colors">
+      ← Back to clients
+    </button>
+  );
+}
+
+/* =====================================================
+   UPLOAD STEP
+===================================================== */
+
+function UploadStep({ files, onFiles, onRemove, onNext }: any) {
+  return (
+    <div className="space-y-6 fade-up d2">
+
+      <div className="grid md:grid-cols-2 gap-4">
+        {/* Camera */}
+        <label className="upload-zone cursor-pointer flex flex-col items-center justify-center gap-3 py-10 border border-dashed border-white/15 rounded-2xl transition-all duration-200">
+          <input type="file" accept="image/*" capture="environment" className="hidden"
+            onChange={(e) => { onFiles(e.target.files); e.currentTarget.value = ""; }} />
+          <div className="w-12 h-12 rounded-full border border-white/15 flex items-center justify-center text-xl text-white/40">📷</div>
+          <div className="text-center">
+            <div className="text-sm text-white/60">Take a photo</div>
+            <div className="text-xs text-white/25 mt-1">Use your camera directly</div>
+          </div>
+        </label>
+
+        {/* File upload */}
+        <label className="upload-zone cursor-pointer flex flex-col items-center justify-center gap-3 py-10 border border-dashed border-white/15 rounded-2xl transition-all duration-200">
+          <input type="file" multiple accept="image/*,.pdf" className="hidden" onChange={(e) => onFiles(e.target.files)} />
+          <div className="w-12 h-12 rounded-full border border-white/15 flex items-center justify-center text-xl text-white/40">📁</div>
+          <div className="text-center">
+            <div className="text-sm text-white/60">Upload files</div>
+            <div className="text-xs text-white/25 mt-1">Images or PDF documents</div>
+          </div>
+        </label>
       </div>
-      <div className="text-xs text-white/30">This may take a few seconds</div>
+
+      {/* File previews */}
+      {files.length > 0 && (
+        <div className="space-y-3">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-white/30">{files.length} file{files.length !== 1 ? "s" : ""} selected</div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {files.map((file: UploadedFile) => (
+              <div key={file.id} className="relative group rounded-xl border border-white/10 overflow-hidden bg-white/[0.02]">
+                {file.preview
+                  ? <img src={file.preview} className="w-full h-28 object-cover" />
+                  : <div className="h-28 flex items-center justify-center text-white/25 text-xs uppercase tracking-widest">PDF</div>
+                }
+                <div className="px-3 py-2">
+                  <div className="truncate text-[11px] text-white/50">{file.name}</div>
+                </div>
+                <button onClick={() => onRemove(file.id)}
+                  className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/70 text-white/60 hover:text-white flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity">
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex justify-end pt-2">
+        <button disabled={files.length === 0} onClick={onNext}
+          className="px-8 py-3 rounded-full bg-white text-black text-sm font-medium disabled:opacity-30 hover:opacity-90 transition-opacity">
+          Analyze Documents →
+        </button>
+      </div>
     </div>
   );
 }
+
+/* =====================================================
+   PROCESSING STEP
+===================================================== */
+
+function ProcessingStep({ label }: { label?: string }) {
+  return (
+    <div className="fade-up flex flex-col items-center justify-center py-24 gap-6">
+      <div className="w-12 h-12 rounded-full border border-[#c9a96e]/30 border-t-[#c9a96e] spin-slow" />
+      <div className="text-center">
+        <div className="text-sm text-white/60">{label || "Reading documents…"}</div>
+        <div className="text-[11px] text-white/25 mt-2 tracking-widest uppercase">This may take a few seconds</div>
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================
+   REVIEW STEP
+===================================================== */
 
 function ReviewStep({ results, setResults, onSave }: any) {
   function update(idx: number, next: ClientAiResult) {
@@ -413,110 +333,180 @@ function ReviewStep({ results, setResults, onSave }: any) {
   }
 
   return (
-    <>
-      <div className="space-y-6">
+    <div className="space-y-8 fade-up d2">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-[10px] uppercase tracking-[0.2em] text-white/30 mb-1">Step 2 of 3</p>
+          <h2 className="text-xl font-light text-white">Review extracted data</h2>
+        </div>
+        <button onClick={onSave}
+          className="px-8 py-3 rounded-full bg-white text-black text-sm font-medium hover:opacity-90 transition-opacity">
+          Save to Archive →
+        </button>
+      </div>
+
+      <div className="space-y-5">
         {results.map((r: ClientAiResult, i: number) => (
-          <ClientReviewCard
-            key={i}
-            result={r}
-            onChange={(next:any) => update(i, next)}
-          />
+          <ClientReviewCard key={i} result={r} onChange={(next: any) => update(i, next)} />
         ))}
       </div>
 
-      <div className="flex justify-end pt-6">
-        <button
-          onClick={onSave}
-          className="px-8 py-3 rounded-full bg-white text-black text-sm font-medium"
-        >
-          Save clients
+      <div className="flex justify-end pt-4 border-t border-white/8">
+        <button onClick={onSave}
+          className="px-8 py-3 rounded-full bg-white text-black text-sm font-medium hover:opacity-90 transition-opacity">
+          Save to Archive →
         </button>
       </div>
-    </>
-  );
-}
-
-function ClientReviewCard({ result, onChange }: any) {
-  const s = result.structured;
-
-  function setField(field: string, value: string) {
-    onChange({
-      ...result,
-      structured: { ...s, [field]: value },
-    });
-  }
-
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 space-y-6">
-      <div className="text-sm font-light">{result.fileName}</div>
-
-      <div className="grid md:grid-cols-3 gap-4">
-        <FieldInline
-          label="Full name"
-          value={s.full_name ?? ""}
-          onChange={(v:any) => setField("full_name", v)}
-        />
-
-        <FieldInline
-          label="Email"
-          value={s.email ?? ""}
-          onChange={(v:any) => setField("email", v)}
-        />
-
-        <FieldInline
-          label="Phone"
-          value={s.phone ?? ""}
-          onChange={(v:any) => setField("phone", v)}
-        />
-      </div>
-
-      {s.measurements && (
-        <div>
-          <div className="text-xs uppercase tracking-widest text-white/40 mb-3">
-            Measurements detected
-          </div>
-
-          <div className="rounded-xl bg-black/40 border border-white/10 divide-y divide-white/10">
-            {Object.entries(s.measurements).map(([section, values]) => {
-              if (!values || typeof values !== "object") return null;
-
-              return (
-                <div key={section} className="border-t border-white/10">
-                  <div className="px-4 py-2 text-xs uppercase text-white/40">
-                    {section.replaceAll("_", " ")}
-                  </div>
-
-                  {Object.entries(values).map(([k, v]) => (
-                    <div
-                      key={k}
-                      className="flex justify-between px-6 py-2 text-sm"
-                    >
-                      <span className="text-white/40 capitalize">{k}</span>
-                      <span className="text-white">{String(v)}</span>
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-function FieldInline({ label, value, onChange }: any) {
+/* =====================================================
+   DONE STEP
+===================================================== */
+
+function DoneStep({ onReset }: { onReset: () => void }) {
+  const router = useRouter();
+  return (
+    <div className="fade-up flex flex-col items-center justify-center py-24 gap-8 text-center">
+      <div className="w-16 h-16 rounded-full border border-[#c9a96e]/40 bg-[#c9a96e]/10 flex items-center justify-center text-2xl">
+        ✓
+      </div>
+      <div>
+        <h2 className="text-2xl font-light text-white mb-2">Import complete</h2>
+        <p className="text-sm text-white/40">The client has been added to your archive.</p>
+      </div>
+      <div className="flex gap-3">
+        <button onClick={() => router.push("/dashboard/customers")}
+          className="px-6 py-3 rounded-full bg-white text-black text-sm font-medium hover:opacity-90 transition-opacity">
+          View Archive
+        </button>
+        <button onClick={onReset}
+          className="btn-gold px-6 py-3 rounded-full text-sm transition-colors">
+          Import Another
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================
+   REVIEW CARD
+===================================================== */
+
+function ClientReviewCard({ result, onChange }: any) {
+  const s = result.structured;
+  const [rawOpen, setRawOpen] = useState(false);
+
+  function updateStructured(patch: Partial<typeof s>) {
+    onChange({ ...result, structured: { ...s, ...patch } });
+  }
+
+  function updateNotes(idx: number, value: string) {
+    const next = [...(s.notes || [])];
+    next[idx] = value;
+    updateStructured({ notes: next });
+  }
+
+  function updateMeasurement(garment: string, key: string, value: string) {
+    updateStructured({ measurements: { ...s.measurements, [garment]: { ...(s.measurements?.[garment] || {}), [key]: value } } });
+  }
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.015] overflow-hidden">
+
+      {/* Card header */}
+      <div className="px-6 py-4 border-b border-white/8 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-2 h-2 rounded-full bg-[#c9a96e]/70" />
+          <span className="text-xs text-white/40 tracking-wider">{result.fileName}</span>
+        </div>
+        {s.full_name && <span className="text-sm font-light text-white">{s.full_name}</span>}
+      </div>
+
+      <div className="p-6 space-y-6">
+
+        {/* Identity fields */}
+        <div className="grid md:grid-cols-3 gap-4">
+          <ReviewField label="Full Name" value={s.full_name ?? ""} onChange={(v: string) => updateStructured({ full_name: v })} />
+          <ReviewField label="Email" value={s.email ?? ""} onChange={(v: string) => updateStructured({ email: v })} />
+          <ReviewField label="Phone" value={s.phone ?? ""} onChange={(v: string) => updateStructured({ phone: v })} />
+        </div>
+
+        {/* Measurements */}
+        {s.measurements && Object.keys(s.measurements).length > 0 && (
+          <div>
+            <SectionLabel>Measurements Detected</SectionLabel>
+            <div className="rounded-xl border border-white/8 overflow-hidden">
+              {Object.entries(s.measurements).map(([section, values]: any, si) => (
+                <div key={section} className={si > 0 ? "border-t border-white/8" : ""}>
+                  <div className="px-4 py-2 bg-white/[0.02] text-[10px] uppercase tracking-[0.18em] text-white/35">
+                    {section.replaceAll("_", " ")}
+                  </div>
+                  {typeof values === "object" && Object.entries(values).map(([k, v]: any) => (
+                    <div key={k} className="flex items-center justify-between px-5 py-2.5 border-t border-white/5">
+                      <span className="text-sm text-white/45 capitalize">{k}</span>
+                      <input value={String(v)} onChange={(e) => updateMeasurement(section, k, e.target.value)}
+                        className="w-24 text-right bg-white/[0.04] border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-[#c9a96e]/40 transition-colors" />
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Notes */}
+        {s.notes?.length > 0 && (
+          <div>
+            <SectionLabel>Notes Detected</SectionLabel>
+            <div className="space-y-2">
+              {s.notes.map((note: any, i: any) => (
+                <div key={i} className="flex items-start gap-3">
+                  <span className="text-[#c9a96e]/40 mt-2.5 text-xs">—</span>
+                  <input value={note} onChange={(e) => updateNotes(i, e.target.value)}
+                    className="flex-1 bg-white/[0.03] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#c9a96e]/40 transition-colors" />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Raw text toggle */}
+        <div>
+          <button onClick={() => setRawOpen(o => !o)}
+            className="text-[10px] uppercase tracking-widest text-white/25 hover:text-white/50 transition-colors">
+            {rawOpen ? "↑ Hide raw transcript" : "↓ Show raw transcript"}
+          </button>
+          {rawOpen && (
+            <textarea value={result.rawText ?? ""} onChange={(e) => onChange({ ...result, rawText: e.target.value })} rows={6}
+              className="mt-3 w-full rounded-xl bg-white/[0.02] border border-white/8 px-4 py-3 text-xs text-white/50 focus:outline-none focus:border-white/20 resize-none transition-colors" />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =====================================================
+   SMALL HELPERS
+===================================================== */
+
+function ReviewField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-widest text-white/40 mb-1">
-        {label}
-      </div>
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm"
-      />
+      <div className="text-[10px] uppercase tracking-[0.2em] text-white/30 mb-2">{label}</div>
+      <input value={value} onChange={e => onChange(e.target.value)} placeholder="—"
+        className="w-full bg-white/[0.03] border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#c9a96e]/40 hover:border-white/20 transition-colors placeholder:text-white/20" />
+    </div>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-3 mb-3">
+      <div className="text-[10px] uppercase tracking-[0.2em] text-white/30">{children}</div>
+      <div className="flex-1 h-px bg-white/8" />
     </div>
   );
 }
